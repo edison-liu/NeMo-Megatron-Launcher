@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -89,10 +90,14 @@ class RLHFPPO(NeMoStage):
         run_cfg = stage_cfg.get("run")
         time_limit = run_cfg.get("time_limit")
         dependency = run_cfg.get("dependency")
+        # subcfg_list = [
+        #     "reward_model_server",
+        #     "initial_policy_server",
+        #     "critic_server",
+        #     "actor",
+        # ]
         subcfg_list = [
-            "reward_model_server",
-            "initial_policy_server",
-            "critic_server",
+            "critic",
             "actor",
         ]
 
@@ -143,6 +148,18 @@ class RLHFPPO(NeMoStage):
             cluster_parameters["job_name"] = (
                 job_name_prefix + cluster_parameters["job_name"]
             )
+        elif cluster == "k8s":
+            cluster_cfg = cfg.get("cluster")
+            k8s_cfg = {**copy.deepcopy(cluster_cfg)}
+
+            cluster_parameters = {**k8s_cfg}
+            cluster_parameters.update(
+                {
+                    **shared_parameters,
+                    "container_image": container_image,
+                    "env_vars": env_vars,
+                }
+            )
 
         return cluster_parameters
 
@@ -155,6 +172,173 @@ class RLHFPPO(NeMoStage):
             if ntasks_per_node == 8
             else f"CUDA_VISIBLE_DEVICES={','.join(map(str, range(ntasks_per_node)))}"
         )
+
+    def save_stage_hydra_config(
+        self, stage_cfg: OmegaConf, job_path: JobPaths, cfg: OmegaConf
+    ) -> Path:
+        """
+        Interpolate and save hydra config file for current stage
+
+        :param OmegaConf stage_cfg: current stage's hydra configuration
+        :param JobPaths job_path: JobPaths object
+        :param OmegaConf cfg: base config for job
+        :return: path current stage's essential nemo scripts code
+        :rtype: Path
+        """
+        # Since k8s uses a Helm chart that launches a job based on the Hydra config
+        # file, the Hydra config file that is generated needs to contain all of the
+        # required keys for each stage.
+        # if cfg.cluster_type == "k8s":
+        #     # OmegaConf doesn't allow adding new keys. Temporarily create a dictionary
+        #     # representation and add the new keys before converting back to an
+        #     # OmegaConf object.
+        #     temp_config = OmegaConf.to_object(stage_cfg)
+        #     temp_config["data_dir"] = cfg.data_dir
+        #     temp_config["cluster_type"] = cfg.cluster_type
+        #     temp_config["launcher_scripts_path"] = cfg.launcher_scripts_path
+        #     temp_config["data_config"] = stage_cfg.run.name
+        #     stage_cfg = OmegaConf.create(temp_config)
+
+        # self.hydra_interpolation(stage_cfg)
+
+        # cfg_save_path = job_path.config_file
+        # omegaconf.OmegaConf.save(stage_cfg, cfg_save_path)
+        # return cfg_save_path
+
+        config_file_list = [
+            self.cfg.launcher_scripts_path + "/conf/rlhf_ppo/gpt3/gpt_ppo_critic.yaml",
+            self.cfg.launcher_scripts_path + "/conf/rlhf_ppo/gpt3/gpt_ppo_actor.yaml",
+        ]
+
+        for i, config_path in enumerate(config_file_list):
+            filename = os.path.basename(config_path)
+            temp_config = OmegaConf.load(config_path)
+            if cfg.cluster_type == "k8s":
+                # OmegaConf doesn't allow adding new keys. Temporarily create a dictionary
+                # representation and add the new keys before converting back to an
+                # OmegaConf object.
+                # temp_config = OmegaConf.to_object(config_path)
+                temp_config["data_dir"] = cfg.data_dir
+                temp_config["cluster_type"] = cfg.cluster_type
+                temp_config["launcher_scripts_path"] = cfg.launcher_scripts_path
+                # temp_config["data_config"] = stage_cfg.run.name
+            stage_cfg = OmegaConf.create(temp_config)
+
+                # self.hydra_interpolation(stage_cfg)
+
+            cfg_save_path = os.path.join(job_path.folder, filename)
+            omegaconf.OmegaConf.save(stage_cfg, cfg_save_path)
+
+        # This path is usless for the subsequence jobs, so it's fine to return last conf file.
+        return Path(cfg_save_path)
+
+    def _make_k8s_spec_file(
+        self, template_root: str, cluster_parameters: Dict, job_path: JobPaths
+    ):
+        """
+        Create a spec file for a Kubernetes RLHF PPO job.
+        The spec file is generated based on the parameters in the cluster and conversion config files.
+
+        :param str template_root: path to where the k8s template files are located
+        :param Dict cluster_parameters: settings specific to the cluster that is being used
+        :param JobPaths job_path: JobPaths object
+        """
+        with open(os.path.join(template_root, "values.yaml")) as value_file:
+            values_template = OmegaConf.load(value_file)
+
+        num_gpus = (
+            self.cfg.evaluation.model.pipeline_model_parallel_size
+            * self.cfg.evaluation.model.tensor_model_parallel_size
+        )
+
+        # values_template.image.trainingImage = cluster_parameters["container_image"]
+        # values_template.image.pullSecret = cluster_parameters["pull_secret"]
+        values_template.image.gpuNum = num_gpus
+        # values_template.trainingConfig.shmSize = cluster_parameters["shm_size"]
+        # values_template.trainingConfig.NFSServer = cluster_parameters["nfs_server"]
+        # values_template.trainingConfig.NFSPath = cluster_parameters["nfs_path"]
+        values_template.trainingConfig.resultsDirectory = str(job_path.folder)
+        values_template.trainingConfig.trainingDirectory = (
+            self.cfg.evaluation.run.train_dir
+        )
+        values_template.trainingConfig.launcherScriptsPath = (
+            self.cfg.launcher_scripts_path
+        )
+        values_template.trainingConfig.tensorParallelism = (
+            self.cfg.evaluation.model.tensor_model_parallel_size
+        )
+        values_template.trainingConfig.pipelineParallelism = (
+            self.cfg.evaluation.model.pipeline_model_parallel_size
+        )
+
+        values_template.trainingConfig.cacheDir = os.path.join(
+            self.cfg.data_dir, "eval_harness_data"
+        )
+        values_template.trainingConfig.outputPath = os.path.join(
+            self.cfg.evaluation.run.results_dir,
+            self.cfg.evaluation.run.eval_name,
+            "results",
+        )
+        values_template.trainingConfig.batchSize = (
+            self.cfg.evaluation.model.eval_batch_size
+        )
+        values_template.trainingConfig.precision = self.cfg.evaluation.model.precision
+        values_template.trainingConfig.nemoModel = self.cfg.evaluation.model.nemo_model
+        values_template.trainingConfig.checkpointFolder = (
+            self.cfg.evaluation.model.checkpoint_folder
+        )
+        values_template.trainingConfig.checkpointName = (
+            self.cfg.evaluation.model.checkpoint_name
+        )
+        values_template.trainingConfig.hparamsFile = (
+            self.cfg.evaluation.model.hparams_file
+        )
+        # values_template.trainingConfig.envVars = cluster_parameters["env_vars"]
+
+        # if cluster_parameters["dns_policy"] is not None:
+        #     values_template.trainingConfig.dnsPolicy = cluster_parameters["dns_policy"]
+
+        k8s_template_path = job_path.folder
+        k8s_template_file = Path(k8s_template_path / "k8s_template" / "values.yaml")
+        k8s_template_file.parent.mkdir(parents=True, exist_ok=True)
+
+        conf = OmegaConf.create(values_template)
+        OmegaConf.save(conf, k8s_template_file)
+
+    def _copy_k8s_helm_chart(self, template_root: str, job_path: JobPaths):
+        """
+        Copy the k8s Helm charts to the results directory.
+
+        :param str template_root: path to where the k8s template files are located
+        :param JobPaths job_path: JobPaths object
+        """
+        template_file = os.path.join(template_root, "rlhf-ppo.yaml")
+        chart_file = os.path.join(template_root, "Chart.yaml")
+        rlhf_ppo_path = Path(
+            job_path.folder / "k8s_template" / "templates" / "rlhf-ppo.yaml"
+        )
+        rlhf_ppo_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path = Path(job_path.folder / "k8s_template" / "config")
+        config_path.mkdir(parents=True, exist_ok=True)
+        chart_path = Path(job_path.folder / "k8s_template" / "Chart.yaml")
+        rlhf_ppo_config_file = os.path.join(template_root, "rlhf-ppo-config.yaml")
+        rlhf_ppo_config_path = Path(
+            job_path.folder / "k8s_template" / "templates" / "rlhf-ppo-config.yaml"
+        )
+        hydra_config_path = Path(job_path.folder / "k8s_template" / "config")
+
+        shutil.copy2(template_file, rlhf_ppo_path)
+        shutil.copy2(chart_file, chart_path)
+        shutil.copy2(rlhf_ppo_config_file, rlhf_ppo_config_path)
+        # shutil.copy2(job_path.config_file, hydra_config_path)
+
+        config_file_list = [
+            "gpt_ppo_critic.yaml",
+            "gpt_ppo_actor.yaml",
+        ]
+
+        for i, config_path in enumerate(config_file_list):
+            shutil.copy2(os.path.join(job_path.folder, config_path), hydra_config_path)
 
     def make_stage_command_groups(self, stage_cfg_path: Path) -> List[List[str]]:
         """
@@ -169,15 +353,23 @@ class RLHFPPO(NeMoStage):
         :rtype: List[List[str]]
         """
         command_groups = []
+        # subcfg_list = [
+        #     "reward_model_server",
+        #     "initial_policy_server",
+        #     "critic_server",
+        #     "actor",
+        # ]
+        # code_path_list = [
+        #     self._rlhf_code_path / "examples/nlp/gpt/serve_reward_model.py",
+        #     self._rlhf_code_path / "examples/nlp/gpt/serve_initial_policy.py",
+        #     self._rlhf_code_path / "examples/nlp/gpt/serve_ppo_critic.py",
+        #     self._rlhf_code_path / "examples/nlp/gpt/train_gpt_ppo_actor.py",
+        # ]
         subcfg_list = [
-            "reward_model_server",
-            "initial_policy_server",
-            "critic_server",
+            "critic",
             "actor",
         ]
         code_path_list = [
-            self._rlhf_code_path / "examples/nlp/gpt/serve_reward_model.py",
-            self._rlhf_code_path / "examples/nlp/gpt/serve_initial_policy.py",
             self._rlhf_code_path / "examples/nlp/gpt/serve_ppo_critic.py",
             self._rlhf_code_path / "examples/nlp/gpt/train_gpt_ppo_actor.py",
         ]
