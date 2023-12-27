@@ -3,10 +3,7 @@ image:
   pullPolicy: IfNotPresent
 
   # Insert the name of your container registry pull secret #
-  pullSecret: nvcr.io
-
-  numGPUs: training.trainer.devices
-  nodes: training.trainer.num_nodes
+  pullSecret: ngc-registry
 
 trainingConfig:
   # Specify the amount of shared memory to attach to the Pods #
@@ -22,10 +19,18 @@ trainingConfig:
   ibResourceName: nvidia.com/hostdev
 
   # Specity the number of IB devices to include in pods #
-  ibCount: "8"
+  ibCount: "0"
 
   # Specify the WandB API key if using WandB for logging #
   wandbKey: "nil"
 
   # Insert the dnsPolicy #
   dnsPolicy: "nil"
+
+critic:
+  numGPUs: rlhf_ppo.critic.trainer.devices
+  nodes: rlhf_ppo.critic.trainer.num_nodes
+
+actor:
+  numGPUs: rlhf_ppo.actor.trainer.devices
+  nodes: rlhf_ppo.actor.trainer.num_nodes

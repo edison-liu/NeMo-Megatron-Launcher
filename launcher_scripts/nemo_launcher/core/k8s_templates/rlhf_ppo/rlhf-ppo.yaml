@@ -8,12 +8,12 @@ metadata:
     app: rlhf-ppo
 spec:
   pytorchReplicaSpecs:
-    Critic:
+    Worker:
       replicas: {{ .Values.image.nodes }}
       template:
         spec:
           containers:
-          - name: critic
+          - name: pytorch
             image: {{ .Values.image.trainingImage }}
             env:
               {{- range $key, $value := $config.envVars }}
@@ -47,6 +47,9 @@ spec:
               limits:
                 nvidia.com/gpu: {{ .Values.image.numGPUs }}
                 {{ $config.ibResourceName }}: {{ $config.ibCount }}
+            ports:
+            - containerPort: 5567
+              name: critic-port
             volumeMounts:
             - mountPath: {{ $config.NFSPath }}
               name: workspace
@@ -73,7 +76,7 @@ spec:
           dnsPolicy: {{ $config.dnsPolicy }}
           {{ end }}
 
-    Actor:
+    Worker:
       replicas: {{ .Values.image.nodes }}
       template:
         spec:

@@ -205,32 +205,47 @@ class RLHFPPO(NeMoStage):
         # omegaconf.OmegaConf.save(stage_cfg, cfg_save_path)
         # return cfg_save_path
 
-        config_file_list = [
-            self.cfg.launcher_scripts_path + "/conf/rlhf_ppo/gpt3/gpt_ppo_critic.yaml",
-            self.cfg.launcher_scripts_path + "/conf/rlhf_ppo/gpt3/gpt_ppo_actor.yaml",
-        ]
+        temp_config = OmegaConf.to_object(stage_cfg)
+        critic_conf = temp_config["critic"]
+        actor_conf = temp_config["actor"]
 
-        for i, config_path in enumerate(config_file_list):
-            filename = os.path.basename(config_path)
-            temp_config = OmegaConf.load(config_path)
-            if cfg.cluster_type == "k8s":
-                # OmegaConf doesn't allow adding new keys. Temporarily create a dictionary
-                # representation and add the new keys before converting back to an
-                # OmegaConf object.
-                # temp_config = OmegaConf.to_object(config_path)
-                temp_config["data_dir"] = cfg.data_dir
-                temp_config["cluster_type"] = cfg.cluster_type
-                temp_config["launcher_scripts_path"] = cfg.launcher_scripts_path
-                # temp_config["data_config"] = stage_cfg.run.name
-            stage_cfg = OmegaConf.create(temp_config)
+        filename = "gpt_ppo_critic.yaml"
+        cfg_save_path = os.path.join(job_path.folder, filename)
+        omegaconf.OmegaConf.save(critic_conf, cfg_save_path)
 
-                # self.hydra_interpolation(stage_cfg)
-
-            cfg_save_path = os.path.join(job_path.folder, filename)
-            omegaconf.OmegaConf.save(stage_cfg, cfg_save_path)
+        filename = "gpt_ppo_actor.yaml"
+        cfg_save_path = os.path.join(job_path.folder, filename)
+        omegaconf.OmegaConf.save(actor_conf, cfg_save_path)
 
         # This path is usless for the subsequence jobs, so it's fine to return last conf file.
         return Path(cfg_save_path)
+
+        # config_file_list = [
+        #     self.cfg.launcher_scripts_path + "/conf/rlhf_ppo/gpt3/gpt_ppo_critic.yaml",
+        #     self.cfg.launcher_scripts_path + "/conf/rlhf_ppo/gpt3/gpt_ppo_actor.yaml",
+        # ]
+
+        # for i, config_path in enumerate(config_file_list):
+        #     filename = os.path.basename(config_path)
+        #     temp_config = OmegaConf.load(config_path)
+        #     if cfg.cluster_type == "k8s":
+        #         # OmegaConf doesn't allow adding new keys. Temporarily create a dictionary
+        #         # representation and add the new keys before converting back to an
+        #         # OmegaConf object.
+        #         # temp_config = OmegaConf.to_object(config_path)
+        #         temp_config["data_dir"] = cfg.data_dir
+        #         temp_config["cluster_type"] = cfg.cluster_type
+        #         temp_config["launcher_scripts_path"] = cfg.launcher_scripts_path
+        #         # temp_config["data_config"] = stage_cfg.run.name
+        #     stage_cfg = OmegaConf.create(temp_config)
+
+        #         # self.hydra_interpolation(stage_cfg)
+
+        #     cfg_save_path = os.path.join(job_path.folder, filename)
+        #     omegaconf.OmegaConf.save(stage_cfg, cfg_save_path)
+
+        # # This path is usless for the subsequence jobs, so it's fine to return last conf file.
+        # return Path(cfg_save_path)
 
     def _make_k8s_spec_file(
         self, template_root: str, cluster_parameters: Dict, job_path: JobPaths
@@ -246,57 +261,29 @@ class RLHFPPO(NeMoStage):
         with open(os.path.join(template_root, "values.yaml")) as value_file:
             values_template = OmegaConf.load(value_file)
 
-        num_gpus = (
-            self.cfg.evaluation.model.pipeline_model_parallel_size
-            * self.cfg.evaluation.model.tensor_model_parallel_size
-        )
+        values_template.image.trainingImage = cluster_parameters["container_image"]
+        values_template.image.pullSecret = cluster_parameters["pull_secret"]
+        # values_template.image.numGPUs = self.stage_cfg.trainer.devices
+        # values_template.image.nodes = self.stage_cfg.trainer.num_nodes
+        values_template.trainingConfig.shmSize = cluster_parameters["shm_size"]
+        values_template.trainingConfig.NFSServer = cluster_parameters["nfs_server"]
+        values_template.trainingConfig.NFSPath = cluster_parameters["nfs_path"]
+        values_template.trainingConfig.ibResourceName = cluster_parameters[
+            "ib_resource_name"
+        ]
+        values_template.trainingConfig.ibCount = cluster_parameters["ib_count"]
+        values_template.trainingConfig.envVars = cluster_parameters["env_vars"]
 
-        # values_template.image.trainingImage = cluster_parameters["container_image"]
-        # values_template.image.pullSecret = cluster_parameters["pull_secret"]
-        values_template.image.gpuNum = num_gpus
-        # values_template.trainingConfig.shmSize = cluster_parameters["shm_size"]
-        # values_template.trainingConfig.NFSServer = cluster_parameters["nfs_server"]
-        # values_template.trainingConfig.NFSPath = cluster_parameters["nfs_path"]
-        values_template.trainingConfig.resultsDirectory = str(job_path.folder)
-        values_template.trainingConfig.trainingDirectory = (
-            self.cfg.evaluation.run.train_dir
-        )
-        values_template.trainingConfig.launcherScriptsPath = (
-            self.cfg.launcher_scripts_path
-        )
-        values_template.trainingConfig.tensorParallelism = (
-            self.cfg.evaluation.model.tensor_model_parallel_size
-        )
-        values_template.trainingConfig.pipelineParallelism = (
-            self.cfg.evaluation.model.pipeline_model_parallel_size
-        )
+        if cluster_parameters["dns_policy"] is not None:
+            values_template.trainingConfig.dnsPolicy = cluster_parameters["dns_policy"]
 
-        values_template.trainingConfig.cacheDir = os.path.join(
-            self.cfg.data_dir, "eval_harness_data"
-        )
-        values_template.trainingConfig.outputPath = os.path.join(
-            self.cfg.evaluation.run.results_dir,
-            self.cfg.evaluation.run.eval_name,
-            "results",
-        )
-        values_template.trainingConfig.batchSize = (
-            self.cfg.evaluation.model.eval_batch_size
-        )
-        values_template.trainingConfig.precision = self.cfg.evaluation.model.precision
-        values_template.trainingConfig.nemoModel = self.cfg.evaluation.model.nemo_model
-        values_template.trainingConfig.checkpointFolder = (
-            self.cfg.evaluation.model.checkpoint_folder
-        )
-        values_template.trainingConfig.checkpointName = (
-            self.cfg.evaluation.model.checkpoint_name
-        )
-        values_template.trainingConfig.hparamsFile = (
-            self.cfg.evaluation.model.hparams_file
-        )
-        # values_template.trainingConfig.envVars = cluster_parameters["env_vars"]
+        if self.cfg.wandb_api_key_file is not None:
+            values_template.trainingConfig.wandbKey = self._add_wandb_key_to_chart()
 
-        # if cluster_parameters["dns_policy"] is not None:
-        #     values_template.trainingConfig.dnsPolicy = cluster_parameters["dns_policy"]
+        values_template.actor.numGPUs = self.stage_cfg.actor.trainer.devices
+        values_template.actor.nodes = self.stage_cfg.actor.trainer.num_nodes
+        values_template.critic.numGPUs = self.stage_cfg.critic.trainer.devices
+        values_template.critic.nodes = self.stage_cfg.critic.trainer.num_nodes
 
         k8s_template_path = job_path.folder
         k8s_template_file = Path(k8s_template_path / "k8s_template" / "values.yaml")
@@ -305,6 +292,70 @@ class RLHFPPO(NeMoStage):
         conf = OmegaConf.create(values_template)
         OmegaConf.save(conf, k8s_template_file)
 
+
+
+        # with open(os.path.join(template_root, "values.yaml")) as value_file:
+        #     values_template = OmegaConf.load(value_file)
+
+        # num_gpus = (
+        #     self.cfg.evaluation.model.pipeline_model_parallel_size
+        #     * self.cfg.evaluation.model.tensor_model_parallel_size
+        # )
+
+        # # values_template.image.trainingImage = cluster_parameters["container_image"]
+        # # values_template.image.pullSecret = cluster_parameters["pull_secret"]
+        # values_template.image.gpuNum = num_gpus
+        # # values_template.trainingConfig.shmSize = cluster_parameters["shm_size"]
+        # # values_template.trainingConfig.NFSServer = cluster_parameters["nfs_server"]
+        # # values_template.trainingConfig.NFSPath = cluster_parameters["nfs_path"]
+        # values_template.trainingConfig.resultsDirectory = str(job_path.folder)
+        # values_template.trainingConfig.trainingDirectory = (
+        #     self.cfg.evaluation.run.train_dir
+        # )
+        # values_template.trainingConfig.launcherScriptsPath = (
+        #     self.cfg.launcher_scripts_path
+        # )
+        # values_template.trainingConfig.tensorParallelism = (
+        #     self.cfg.evaluation.model.tensor_model_parallel_size
+        # )
+        # values_template.trainingConfig.pipelineParallelism = (
+        #     self.cfg.evaluation.model.pipeline_model_parallel_size
+        # )
+
+        # values_template.trainingConfig.cacheDir = os.path.join(
+        #     self.cfg.data_dir, "eval_harness_data"
+        # )
+        # values_template.trainingConfig.outputPath = os.path.join(
+        #     self.cfg.evaluation.run.results_dir,
+        #     self.cfg.evaluation.run.eval_name,
+        #     "results",
+        # )
+        # values_template.trainingConfig.batchSize = (
+        #     self.cfg.evaluation.model.eval_batch_size
+        # )
+        # values_template.trainingConfig.precision = self.cfg.evaluation.model.precision
+        # values_template.trainingConfig.nemoModel = self.cfg.evaluation.model.nemo_model
+        # values_template.trainingConfig.checkpointFolder = (
+        #     self.cfg.evaluation.model.checkpoint_folder
+        # )
+        # values_template.trainingConfig.checkpointName = (
+        #     self.cfg.evaluation.model.checkpoint_name
+        # )
+        # values_template.trainingConfig.hparamsFile = (
+        #     self.cfg.evaluation.model.hparams_file
+        # )
+        # # values_template.trainingConfig.envVars = cluster_parameters["env_vars"]
+
+        # # if cluster_parameters["dns_policy"] is not None:
+        # #     values_template.trainingConfig.dnsPolicy = cluster_parameters["dns_policy"]
+
+        # k8s_template_path = job_path.folder
+        # k8s_template_file = Path(k8s_template_path / "k8s_template" / "values.yaml")
+        # k8s_template_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # conf = OmegaConf.create(values_template)
+        # OmegaConf.save(conf, k8s_template_file)
+
     def _copy_k8s_helm_chart(self, template_root: str, job_path: JobPaths):
         """
         Copy the k8s Helm charts to the results directory.
@@ -312,12 +363,19 @@ class RLHFPPO(NeMoStage):
         :param str template_root: path to where the k8s template files are located
         :param JobPaths job_path: JobPaths object
         """
-        template_file = os.path.join(template_root, "rlhf-ppo.yaml")
+        # template_file = os.path.join(template_root, "rlhf-ppo.yaml")
         chart_file = os.path.join(template_root, "Chart.yaml")
-        rlhf_ppo_path = Path(
-            job_path.folder / "k8s_template" / "templates" / "rlhf-ppo.yaml"
-        )
-        rlhf_ppo_path.parent.mkdir(parents=True, exist_ok=True)
+        # rlhf_ppo_path = Path(
+        #     job_path.folder / "k8s_template" / "templates" / "rlhf-ppo.yaml"
+        # )
+        # rlhf_ppo_path.parent.mkdir(parents=True, exist_ok=True)
+        template_file_critic = os.path.join(template_root, "rlhf-ppo-critic.yaml")
+        rlhf_ppo_critic_path = Path(job_path.folder / "k8s_template" / "templates" / "rlhf-ppo-critic.yaml")
+        
+        template_file_actor = os.path.join(template_root, "rlhf-ppo-actor.yaml")
+        rlhf_ppo_actor_path = Path(job_path.folder / "k8s_template" / "templates" / "rlhf-ppo-actor.yaml")
+        rlhf_ppo_actor_path.parent.mkdir(parents=True, exist_ok=True)
+
         config_path = Path(job_path.folder / "k8s_template" / "config")
         config_path.mkdir(parents=True, exist_ok=True)
         chart_path = Path(job_path.folder / "k8s_template" / "Chart.yaml")
@@ -327,7 +385,9 @@ class RLHFPPO(NeMoStage):
         )
         hydra_config_path = Path(job_path.folder / "k8s_template" / "config")
 
-        shutil.copy2(template_file, rlhf_ppo_path)
+        # shutil.copy2(template_file, rlhf_ppo_path)
+        shutil.copy2(template_file_critic, rlhf_ppo_critic_path)
+        shutil.copy2(template_file_actor, rlhf_ppo_actor_path)
         shutil.copy2(chart_file, chart_path)
         shutil.copy2(rlhf_ppo_config_file, rlhf_ppo_config_path)
         # shutil.copy2(job_path.config_file, hydra_config_path)

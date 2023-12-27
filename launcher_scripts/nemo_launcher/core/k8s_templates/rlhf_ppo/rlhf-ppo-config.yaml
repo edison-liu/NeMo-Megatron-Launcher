@@ -3,5 +3,7 @@ kind: ConfigMap
 metadata:
   name: rlhf-ppo-config
 data:
-  config.yaml: |-
-  {{ (.Files.Glob "config/*hydra.yaml").AsConfig | indent 4 }}
+  config_critic.yaml: |-
+  {{ (.Files.Glob "config/gpt_ppo_critic.yaml").AsConfig | indent 4 }}
+  config_actor.yaml: |-
+  {{ (.Files.Glob "config/gpt_ppo_actor.yaml").AsConfig | indent 4 }}

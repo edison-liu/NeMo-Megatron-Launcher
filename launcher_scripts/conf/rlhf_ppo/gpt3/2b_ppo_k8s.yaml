@@ -18,7 +18,7 @@ critic:
 
     ppo:
       # mbs for inference
-      inference_micro_batch_size: 2
+      inference_micro_batch_size: 4
       port: 5556
 
       # run rm and critic together
@@ -59,9 +59,10 @@ critic:
       model_parallel_size: ${multiply:${rlhf_ppo.critic.model.tensor_model_parallel_size}, ${rlhf_ppo.critic.model.pipeline_model_parallel_size}}
 
   model:
+    mcore_gpt: True
     # critic args
     loss_clip_val: 0.2
-    offload_adam_states: False
+    offload_adam_states: True
     output_sequence: True # Whether to output a single scalar or a sequence of scalars.
     reward_standardization:
       enable: False
@@ -74,7 +75,7 @@ critic:
 
     micro_batch_size: 1
     global_batch_size: 64
-    tensor_model_parallel_size: 1
+    tensor_model_parallel_size: 4
     pipeline_model_parallel_size: 1
     megatron_amp_O2: True # Enable O2-level automatic mixed precision using master parameters
 
@@ -84,6 +85,7 @@ critic:
 
     # miscellaneous
     seed: 1234
+    num_attributes: 1
 
     optim:
       name: distributed_fused_adam
@@ -109,7 +111,7 @@ actor:
 
   trainer:
     # these args are respected
-    num_nodes: 8
+    num_nodes: 1
     devices: 8
     accelerator: gpu
     precision: bf16
@@ -234,16 +236,20 @@ actor:
       # max length means max amount of tokens to generate
       length_params:
         # max_length: ${int_div:${rlhf_ppo.actor.model.encoder_seq_length}, 2}
-        max_length: 2048
+        max_length: 1024
         min_length: 1
 
     mcore_gpt: True
+    enable_nge: True
     # these control the mbs/gbs during PPO training
     micro_batch_size: 1
     global_batch_size: 64
-    tensor_model_parallel_size: 1
+    tensor_model_parallel_size: 4
     pipeline_model_parallel_size: 1
     megatron_amp_O2: True
+
+    activations_checkpoint_granularity: "selective"
+    activations_checkpoint_method: "uniform"
 
     encoder_seq_length: 4096
     max_position_embeddings: ${rlhf_ppo.actor.model.encoder_seq_length}
