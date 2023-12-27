@@ -3,7 +3,7 @@ image:
   pullPolicy: IfNotPresent
 
   # Insert the name of your container registry pull secret #
-  pullSecret: ngc-registry
+  pullSecret: nvcr.io
 
 trainingConfig:
   # Specify the amount of shared memory to attach to the Pods #

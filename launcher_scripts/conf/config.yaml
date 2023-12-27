@@ -13,7 +13,7 @@ defaults:
   - evaluation: gpt3/evaluate_all
   - export: gpt3/export_gpt3
   - rlhf_rm: gpt3/2b_rm
-  - rlhf_ppo: gpt3/2b_ppo_k8s
+  - rlhf_ppo: gpt3/2b_ppo
   - override hydra/job_logging: stdout
 
 hydra:
